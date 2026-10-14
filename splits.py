@@ -74,12 +74,10 @@ def encode(records):
 def export_csv(data, path, source_fasta):
     """Write the prepared dataset as one flat CSV.
  
-    Lets anyone load it without parsing FASTA and without re-deciding what to
-    drop:   df = pd.read_csv("dataset.csv", comment="#")
+    Lets anyone load it without parsing FASTA:   
+            df = pd.read_csv("dataset.csv", comment="#")
             train, val = df[df.partition == 2], df[df.partition == 1]
  
-    The '#' header records what produced it, so a stale file is detectable.
-    Regenerate rather than hand-edit; verify_csv() checks it still matches.
     """
     md5 = hashlib.md5(open(source_fasta, "rb").read()).hexdigest()
     with open(path, "w") as f:
@@ -117,9 +115,7 @@ if __name__ == "__main__":
         
         export_csv(data, "dataset.csv", sys.argv[1])
         n = verify_csv("dataset.csv", sys.argv[1])
-        print(f"\nwrote dataset.csv ({n} rows), verified against the FASTA.\n"
-          "Groupmates can use it directly:\n"
-          '  df = pd.read_csv("dataset.csv", comment="#")\n'
-          "  train, val = df[df.partition == 2], df[df.partition == 1]   # fold 0")
+        print(f"\nwrote dataset.csv ({n} rows), verified against the FASTA.\n")
+          
 
     
