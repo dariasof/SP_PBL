@@ -1,0 +1,4 @@
+# data 
+*.fasta
+dataset.csv
+*.csv
