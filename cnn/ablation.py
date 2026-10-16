@@ -108,12 +108,13 @@ def run(dilations, train_df, val_df, use_crf, epochs=30, patience=5, seed=0):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
+    ap.add_argument("--data", default="dataset.csv")
     ap.add_argument("--config", default="rf59")
     ap.add_argument("--folds", nargs="+", type=int, default=list(range(6)))
     ap.add_argument("--epochs", type=int, default=30)
     args = ap.parse_args()
 
-    df = pd.read_csv("dataset.csv", comment="#")
+    df = pd.read_csv(args.data, comment="#")
     dil = CONFIGS[args.config]
     rows = []
 
