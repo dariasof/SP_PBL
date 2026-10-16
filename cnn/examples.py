@@ -20,7 +20,10 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from ablation import ILLEGAL, count_violations, predict_all, train_crf
 from model import CnnCrf
-from splits_simple import FOLDS, LABELS
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent)) 
+from splits import FOLDS, LABELS
 from training import CONFIGS, DEVICE, set_seed, tensors
 
 

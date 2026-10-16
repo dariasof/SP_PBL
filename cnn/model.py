@@ -9,7 +9,9 @@ the model ends up with was learned from the data.
 import torch
 import torch.nn as nn
 from torchcrf import CRF
- 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent)) 
 from splits import LABELS, N_AA
  
  

@@ -27,9 +27,11 @@ import torch
 import torch.nn as nn
 from sklearn.metrics import f1_score, matthews_corrcoef
 from torch.utils.data import DataLoader, TensorDataset
-
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent)) 
 from model import CnnCrf
-from splits_simple import FOLDS, LABELS
+from splits import FOLDS, LABELS
 from training import ALL, CONFIGS, DEVICE, SP, set_seed, tensors
 
 # transitions that cannot happen in a real protein
