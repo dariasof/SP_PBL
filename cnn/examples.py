@@ -95,13 +95,15 @@ def train_cnn_only_state(dilations, train_df, val_df, epochs, patience=5, seed=0
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
+    ap.add_argument("--data", default="dataset.csv")
+
     ap.add_argument("--config", default="rf59")
     ap.add_argument("--fold", type=int, default=0)
     ap.add_argument("-n", type=int, default=3, help="examples of each kind")
     ap.add_argument("--epochs", type=int, default=30)
     args = ap.parse_args()
 
-    df = pd.read_csv("dataset.csv", comment="#")
+    df = pd.read_csv(args.data, comment="#")
     _, tr, va = FOLDS[args.fold]
     train_df, val_df = df[df.partition == tr], df[df.partition == va].reset_index(drop=True)
 
