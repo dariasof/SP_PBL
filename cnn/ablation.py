@@ -40,11 +40,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from splits import FOLDS, LABELS
 from training import ALL, CONFIGS, DEVICE, SP, set_seed, tensors
 
-# transitions that cannot happen in a real protein
-ILLEGAL = {(a, b) for a in "SLT" for b in "SLT" if a != b}   # no mixing SP types
+# SignalP 6.0, supplementary figure 8: the SP states of each type form a
+# separate chain, and every cleavage site leads into O. 23 of the 36 ordered
+# pairs cannot occur.
+ILLEGAL = {(a, b) for a in "SLT" for b in "SLT" if a != b}   # one SP type per protein
+ILLEGAL |= {(a, b) for a in "SLT" for b in "MI"}             # mature chain starts outside
 ILLEGAL |= {(a, b) for a in "OMI" for b in "SLT"}            # no returning to an SP
 ILLEGAL |= {("O", "I"), ("I", "O")}                          # no crossing without M
-
 
 def count_violations(pred, mask):
     """Fraction of sequences whose predicted path contains an impossible step."""
