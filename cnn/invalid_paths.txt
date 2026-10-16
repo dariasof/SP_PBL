@@ -1,0 +1,19 @@
+CNN+CRF   fold 0  macro-F1 0.7698  MCC 0.7796  invalid paths 9.9%  (7.4 min)
+CNN+CRF   fold 1  macro-F1 0.7917  MCC 0.6990  invalid paths 22.0%  (4.7 min)
+CNN+CRF   fold 2  macro-F1 0.7805  MCC 0.7850  invalid paths 11.0%  (6.6 min)
+CNN+CRF   fold 3  macro-F1 0.8131  MCC 0.7023  invalid paths 26.5%  (4.8 min)
+CNN+CRF   fold 4  macro-F1 0.7461  MCC 0.7366  invalid paths 15.6%  (6.2 min)
+CNN+CRF   fold 5  macro-F1 0.8036  MCC 0.6910  invalid paths 25.8%  (4.9 min)
+
+CNN only  fold 0  macro-F1 0.6632  MCC 0.6064  invalid paths 70.7%  (0.4 min)
+CNN only  fold 1  macro-F1 0.6825  MCC 0.5907  invalid paths 79.1%  (0.2 min)
+CNN only  fold 2  macro-F1 0.6697  MCC 0.6170  invalid paths 78.8%  (0.3 min)
+CNN only  fold 3  macro-F1 0.7240  MCC 0.6094  invalid paths 74.0%  (0.4 min)
+CNN only  fold 4  macro-F1 0.6150  MCC 0.5648  invalid paths 83.3%  (0.2 min)
+CNN only  fold 5  macro-F1 0.6956  MCC 0.5709  invalid paths 76.4%  (0.4 min)
+
+variant               macro-F1                 MCC     invalid paths
+CNN+CRF         0.7841 +/-0.0099      0.7322 +/-0.0171            18.5%
+CNN only        0.6750 +/-0.0149      0.5932 +/-0.0088            77.0%
+
+paired difference (CRF - no CRF): +0.1091 +/- 0.0055   CRF wins on 6/6 folds

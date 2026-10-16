@@ -160,13 +160,15 @@ def crf_invalid_paths(config, dilations, fold, train_df, val_df, epochs):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
+    ap.add_argument("--data", default="dataset.csv")
+
     ap.add_argument("--config", default="rf59")
     ap.add_argument("--folds", nargs="+", type=int, default=list(range(6)))
     ap.add_argument("--epochs", type=int, default=30)
     ap.add_argument("--results", default="results.csv")
     args = ap.parse_args()
 
-    df = pd.read_csv("dataset.csv", comment="#")
+    df = pd.read_csv(args.data, comment="#")
     crf = pd.read_csv(args.results).query("config == @args.config")
     if crf.empty:
         raise SystemExit(f"no rows for {args.config} in {args.results} — "
