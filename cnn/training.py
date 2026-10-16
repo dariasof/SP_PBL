@@ -76,8 +76,8 @@ def evaluate(model, x, y, mask, batch_size=256):
     }
  
  
-def train_one(dilations, train_df, val_df, epochs=30, lr=2e-3,
-              batch_size=512, patience=5, seed=0, verbose=True):
+def train_one(dilations, train_df, val_df, epochs=30, lr=1e-3,
+              batch_size=64, patience=5, seed=0, verbose=True):
     """Train one config on one fold. Returns scores at the best epoch."""
     set_seed(seed)
     x_tr, y_tr, m_tr = tensors(train_df)
