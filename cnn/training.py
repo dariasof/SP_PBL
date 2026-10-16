@@ -1,211 +1,185 @@
-"""Does the CRF earn its place? Trains only the CNN-only variant.
 
-    python ablation.py                  # rf59, all 6 folds
-    python ablation.py --folds 0 --epochs 5
-
-The CNN+CRF numbers are read from results.csv -- no need to retrain them.
-Only the no-CRF variant is trained here, so this is roughly half the work.
-
-Two things are measured, because the CRF is supposed to buy two things:
-
-  performance   macro-F1 / MCC / SP-F1
-  structure     how often the predicted label sequence is biologically
-                impossible -- returning to a signal peptide after the mature
-                protein starts, mixing two SP types, crossing the membrane
-                without a transmembrane segment
-
-The CRF here is UNCONSTRAINED, so valid output is not guaranteed by
-construction; it has to be learned. That makes the structural comparison a
-real experiment rather than a tautology.
-
-Invalid-path counts for the CRF variant come from checkpoints/ if present
-(inference only, a few seconds). Run training.py once with checkpoint saving
-to get them; without checkpoints that column is reported as n/a.
+"""Train the CNN+CRF on every config and every fold.
+ 
+    python training.py                      # 5 configs x 6 folds = 30 runs
+    python training.py --configs rf9 rf59   # just two configs
+    python training.py --folds 0 --epochs 3 # quick check
+ 
+Writes one row per run to results.csv as it finishes, plus the confusion
+matrix and learned transition matrix for each run.
 """
-
+ 
 import argparse
+import csv
 import pathlib
+import random
 import time
-
+ 
+import numpy as np
 import pandas as pd
 import torch
-import torch.nn as nn
-from sklearn.metrics import f1_score, matthews_corrcoef
+from sklearn.metrics import confusion_matrix, f1_score, matthews_corrcoef
 from torch.utils.data import DataLoader, TensorDataset
-
-from model import CnnCrf
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent)) 
-from splits import FOLDS, LABELS
-from training import ALL, CONFIGS, DEVICE, SP, set_seed, tensors
-
-# transitions that cannot happen in a real protein
-ILLEGAL = {(a, b) for a in "SLT" for b in "SLT" if a != b}   # no mixing SP types
-ILLEGAL |= {(a, b) for a in "OMI" for b in "SLT"}            # no returning to an SP
-ILLEGAL |= {("O", "I"), ("I", "O")}                          # no crossing without M
-
-
-def count_violations(pred, mask):
-    """Fraction of sequences whose predicted path contains an impossible step."""
-    bad = 0
-    for row, m in zip(pred, mask):
-        path = [LABELS[int(t)] for t in row[m]]
-        if any(step in ILLEGAL for step in zip(path, path[1:])):
-            bad += 1
-    return bad / len(pred)
-
-
-def scores(true, pred):
-    return {"macro_f1": f1_score(true, pred, average="macro", labels=ALL, zero_division=0),
-            "mcc": matthews_corrcoef(true, pred),
-            "sp_macro_f1": f1_score(true, pred, average="macro", labels=SP, zero_division=0)}
-
-
-def predict_all(model, x, mask, use_crf):
-    out = []
+ 
+from model import CnnCrf
+from splits import FOLDS, LABELS, encode
+ 
+# same depth, same width, same parameter count — only the window changes
+CONFIGS = {
+    "rf9":  (1, 1, 1, 1),
+    "rf19": (1, 2, 2, 4),
+    "rf31": (1, 2, 4, 8),
+    "rf59": (1, 4, 8, 16),
+    "rf75": (1, 4, 16, 16),
+}
+ 
+ALL = list(range(len(LABELS)))
+SP = [LABELS.index(c) for c in "SLT"]          # signal peptide states only
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+ 
+ 
+def set_seed(s):
+    random.seed(s)
+    np.random.seed(s)
+    torch.manual_seed(s)
+    torch.cuda.manual_seed_all(s)
+ 
+ 
+def tensors(frame):
+    """DataFrame -> (x, y, mask) tensors."""
+    x, y, m = encode(list(frame.itertuples(index=False, name=None)))
+    return torch.from_numpy(x), torch.from_numpy(y), torch.from_numpy(m)
+ 
+ 
+def evaluate(model, x, y, mask, batch_size=256):
+    """Per-residue scores over unpadded positions."""
     model.eval()
-    with torch.no_grad():
-        for i in range(0, len(x), 256):
-            xb, mb = x[i:i+256].to(DEVICE), mask[i:i+256].to(DEVICE)
-            out.append((model.predict(xb, mb) if use_crf
-                        else model.emissions(xb).argmax(-1)).cpu())
-    return torch.cat(out)
-
-
-def train_cnn_only(dilations, train_df, val_df, epochs=30, patience=5, seed=0):
-    """Identical network, plain per-residue cross-entropy, argmax decoding."""
+    preds = []
+    for i in range(0, len(x), batch_size):
+        xb = x[i : i + batch_size].to(DEVICE)
+        mb = mask[i : i + batch_size].to(DEVICE)
+        preds.append(model.predict(xb, mb).cpu())
+    pred = torch.cat(preds)
+ 
+    t, p = y[mask].numpy(), pred[mask].numpy()
+    # labels=ALL matters: without it macro-F1 averages only over the classes
+    # that appear, so a model that never predicts T is scored over 5 not 6.
+    return {
+        "macro_f1": f1_score(t, p, average="macro", labels=ALL, zero_division=0),
+        "mcc": matthews_corrcoef(t, p),
+        "sp_macro_f1": f1_score(t, p, average="macro", labels=SP, zero_division=0),
+        "per_class": f1_score(t, p, average=None, labels=ALL, zero_division=0),
+        "confusion": confusion_matrix(t, p, labels=ALL),
+    }
+ 
+ 
+def train_one(dilations, train_df, val_df, epochs=30, lr=2e-3,
+              batch_size=512, patience=5, seed=0, verbose=True):
+    """Train one config on one fold. Returns scores at the best epoch."""
     set_seed(seed)
     x_tr, y_tr, m_tr = tensors(train_df)
     x_va, y_va, m_va = tensors(val_df)
-    loader = DataLoader(TensorDataset(x_tr, y_tr, m_tr), batch_size=64, shuffle=True,
-                        generator=torch.Generator().manual_seed(seed))
-
-    model = CnnCrf(dilations=dilations).to(DEVICE)   # the CRF simply goes unused
-    opt = torch.optim.Adam(model.parameters(), lr=1e-3)
-    ce = nn.CrossEntropyLoss(ignore_index=-100)
-
-    best, bad = None, 0
-    for epoch in range(epochs):
-        model.train()
-        for xb, yb, mb in loader:
-            xb, yb = xb.to(DEVICE), yb.to(DEVICE)
-            opt.zero_grad()
-            ce(model.emissions(xb).reshape(-1, len(LABELS)), yb.reshape(-1)).backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
-            opt.step()
-
-        pred = predict_all(model, x_va, m_va, use_crf=False)
-        s = scores(y_va[m_va].numpy(), pred[m_va].numpy())
-        if best is None or s["macro_f1"] > best["macro_f1"]:
-            best, bad = s, 0
-            best["invalid_paths"] = count_violations(pred, m_va)
-        else:
-            bad += 1
-            if bad >= patience:
-                break
-    return best
-
-
-def train_crf(dilations, train_df, val_df, epochs=30, patience=5, seed=0):
-    """Same network, CRF loss and Viterbi decoding. Only needed once per fold."""
-    set_seed(seed)
-    x_tr, y_tr, m_tr = tensors(train_df)
-    x_va, y_va, m_va = tensors(val_df)
-    loader = DataLoader(TensorDataset(x_tr, y_tr, m_tr), batch_size=64, shuffle=True,
-                        generator=torch.Generator().manual_seed(seed))
-
+ 
+    loader = DataLoader(
+        TensorDataset(x_tr, y_tr, m_tr), batch_size=batch_size, shuffle=True,
+        generator=torch.Generator().manual_seed(seed),
+    )
+ 
     model = CnnCrf(dilations=dilations).to(DEVICE)
-    opt = torch.optim.Adam(model.parameters(), lr=1e-3)
-
-    best, best_state, bad = None, None, 0
+    opt = torch.optim.Adam(model.parameters(), lr=lr)
+ 
+    best, best_epoch, bad = None, -1, 0
     for epoch in range(epochs):
         model.train()
+        total = 0.0
         for xb, yb, mb in loader:
             xb, yb, mb = xb.to(DEVICE), yb.to(DEVICE), mb.to(DEVICE)
             opt.zero_grad()
-            model.loss(xb, yb, mb).backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
+            loss = model.loss(xb, yb, mb)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)   # CRF loss can spike
             opt.step()
-
-        pred = predict_all(model, x_va, m_va, use_crf=True)
-        s = scores(y_va[m_va].numpy(), pred[m_va].numpy())
+            total += loss.item() * len(xb)
+ 
+        s = evaluate(model, x_va, y_va, m_va)
+        if verbose:
+            print(f"    epoch {epoch:>2}  loss {total/len(x_tr):7.3f}   "
+                  f"macro-F1 {s['macro_f1']:.4f}   MCC {s['mcc']:.4f}")
+ 
+        # keep the best epoch, stop if it hasn't improved for `patience` epochs
         if best is None or s["macro_f1"] > best["macro_f1"]:
-            best, bad = s, 0
-            best["invalid_paths"] = count_violations(pred, m_va)
-            best_state = {k: v.clone() for k, v in model.state_dict().items()}
+            best, best_epoch, bad = s, epoch, 0
+            best["transitions"] = model.transition_matrix()
         else:
             bad += 1
             if bad >= patience:
+                if verbose:
+                    print(f"    early stop (best was epoch {best_epoch})")
                 break
-    return best, best_state
-
-
-def crf_invalid_paths(config, dilations, fold, train_df, val_df, epochs):
-    """Inference from a checkpoint if we have one, else train and save one."""
-    ckpt = pathlib.Path(f"checkpoints/{config}_fold{fold}.pt")
-    if ckpt.exists():
-        blob = torch.load(ckpt, map_location="cpu", weights_only=False)
-        model = CnnCrf(dilations=blob["dilations"])
-        model.load_state_dict(blob["state_dict"])
-        x_va, _, m_va = tensors(val_df)
-        pred = predict_all(model.to(DEVICE), x_va, m_va, use_crf=True)
-        return count_violations(pred, m_va), True
-
-    best, state = train_crf(dilations, train_df, val_df, epochs=epochs)
-    ckpt.parent.mkdir(exist_ok=True)
-    torch.save({"dilations": dilations, "state_dict": state}, ckpt)
-    return best["invalid_paths"], False
-
-
-if __name__ == "__main__":
+ 
+    best["best_epoch"] = best_epoch
+    return best
+ 
+ 
+def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--config", default="rf59")
+    ap.add_argument("--data", default="dataset.csv")
+    ap.add_argument("--out", default="results.csv")
+    ap.add_argument("--configs", nargs="+", default=list(CONFIGS))
     ap.add_argument("--folds", nargs="+", type=int, default=list(range(6)))
     ap.add_argument("--epochs", type=int, default=30)
-    ap.add_argument("--results", default="results.csv")
+    ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
-
-    df = pd.read_csv("dataset.csv", comment="#")
-    crf = pd.read_csv(args.results).query("config == @args.config")
-    if crf.empty:
-        raise SystemExit(f"no rows for {args.config} in {args.results} — "
-                         f"run training.py first, or pass --config")
-
-    rows = []
-    for k in args.folds:
-        _, tr, va = FOLDS[k]
-        val_df = df[df.partition == va]
-
-        t0 = time.time()
-        s = train_cnn_only(CONFIGS[args.config], df[df.partition == tr],
-                           val_df, epochs=args.epochs)
-        mins = (time.time() - t0) / 60
-
-        ref = crf[crf.fold == k].iloc[0]           # performance from results.csv
-        inv, cached = crf_invalid_paths(args.config, CONFIGS[args.config], k,
-                                        df[df.partition == tr], val_df, args.epochs)
-
-        rows.append({"fold": k,
-                     "crf_macro_f1": ref.macro_f1, "cnn_macro_f1": s["macro_f1"],
-                     "crf_mcc": ref.mcc, "cnn_mcc": s["mcc"],
-                     "crf_invalid": inv, "cnn_invalid": s["invalid_paths"]})
-
-        src = "cached" if cached else "trained"
-        print(f"fold {k}  macro-F1  CRF {ref.macro_f1:.4f} / CNN {s['macro_f1']:.4f}   "
-              f"invalid  CRF {inv:.1%} ({src}) / CNN {s['invalid_paths']:.1%}   "
-              f"({(time.time()-t0)/60:.1f} min)")
-
-    out = pd.DataFrame(rows)
-    out.to_csv("ablation.csv", index=False)
-
-    d = out.crf_macro_f1 - out.cnn_macro_f1
-    print(f"\n{'':12}{'macro-F1':>22}{'MCC':>22}{'invalid paths':>18}")
-    for tag, f1, mcc, inv in [("CNN+CRF", out.crf_macro_f1, out.crf_mcc, out.crf_invalid),
-                              ("CNN only", out.cnn_macro_f1, out.cnn_mcc, out.cnn_invalid)]:
-        print(f"{tag:<12}{f1.mean():>13.4f} +/-{f1.sem():<6.4f}"
-              f"{mcc.mean():>13.4f} +/-{mcc.sem():<6.4f}{inv.mean():>17.1%}")
-
-    if len(d) > 1:
-        print(f"\npaired difference (CRF - no CRF): {d.mean():+.4f} +/- {d.sem():.4f}"
-              f"   CRF wins on {int((d > 0).sum())}/{len(d)} folds")
+ 
+    df = pd.read_csv(args.data, comment="#")
+    out = pathlib.Path(args.out)
+    pathlib.Path("matrices").mkdir(exist_ok=True)
+    header_needed = not out.exists()
+ 
+    print(f"device: {DEVICE}   configs: {args.configs}   folds: {args.folds}\n")
+ 
+    with out.open("a", newline="") as fh:
+        w = csv.writer(fh)
+        if header_needed:
+            w.writerow(["config", "rf", "fold", "seed", "macro_f1", "mcc",
+                        "sp_macro_f1", "best_epoch", "minutes"]
+                       + [f"f1_{c}" for c in LABELS])
+ 
+        for name in args.configs:
+            dil = CONFIGS[name]
+            for k in args.folds:
+                _, train_part, val_part = FOLDS[k]
+                train_df = df[df.partition == train_part]
+                val_df = df[df.partition == val_part]
+ 
+                rf = 1 + sum(2 * d for d in dil)
+                print(f"{name} (RF={rf})  fold {k}  "
+                      f"train=P{train_part} val=P{val_part}")
+ 
+                t0 = time.time()
+                s = train_one(dil, train_df, val_df,
+                              epochs=args.epochs, seed=args.seed)
+                mins = (time.time() - t0) / 60
+ 
+                print(f"  -> macro-F1 {s['macro_f1']:.4f}  MCC {s['mcc']:.4f}  "
+                      f"SP-F1 {s['sp_macro_f1']:.4f}  ({mins:.1f} min)\n")
+ 
+                w.writerow([name, rf, k, args.seed,
+                            round(s["macro_f1"], 4), round(s["mcc"], 4),
+                            round(s["sp_macro_f1"], 4), s["best_epoch"], round(mins, 2)]
+                           + [round(float(v), 4) for v in s["per_class"]])
+                fh.flush()
+ 
+                # saved for the confusion-matrix and transition-matrix slides
+                np.savetxt(f"matrices/cm_{name}_fold{k}.csv", s["confusion"],
+                           fmt="%d", delimiter=",", header=",".join(LABELS))
+                np.savetxt(f"matrices/trans_{name}_fold{k}.csv", s["transitions"],
+                           fmt="%.4f", delimiter=",", header=",".join(LABELS))
+ 
+ 
+if __name__ == "__main__":
+    main()
+ 
